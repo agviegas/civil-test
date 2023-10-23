@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0"
+    />
+    <meta http-equiv="X-UA-Compatible" content="ie=edge" />
+    <link rel="stylesheet" href="styles.css" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/icon?family=Material+Icons"
+    />
+    <link rel="icon" type="image/x-icon" href="favicon.ico" />
+    <title>Tools Component</title>
+  </head>
+  <body>
+    <div class="full-screen" id="container"></div>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.152.2/build/three.module.js",
+          "web-ifc": "https://unpkg.com/web-ifc@0.0.44/web-ifc-api.js",
+          "stats.js/src/Stats.js": "https://unpkg.com/stats-js@1.0.1/src/Stats.js",
+          "three/examples/jsm/libs/lil-gui.module.min": "https://unpkg.com/three@0.152.2/examples/jsm/libs/lil-gui.module.min.js",
+          "openbim-components": "./openbim-components.js",
+          "client-zip": "https://unpkg.com/client-zip@2.3.0/index.js"
+        }
+      }
+    </script>
+    <script type="module">
+      // Set up scene (see SimpleScene tutorial)
+
+      import "./data.js";
+      import * as THREE from "three";
+      import * as OBC from "openbim-components";
+      import Stats from "stats.js/src/Stats.js";
+
+      const container = document.getElementById("container");
+
+      const components = new OBC.Components();
+
+      components.scene = new OBC.SimpleScene(components);
+      components.renderer = new OBC.PostproductionRenderer(
+        components,
+        container
+      );
+      components.camera = new OBC.SimpleCamera(components);
+      components.raycaster = new OBC.SimpleRaycaster(components);
+
+      components.init();
+
+      components.renderer.postproduction.enabled = true;
+      components.renderer.postproduction.customEffects.outlineEnabled = true;
+
+      const scene = components.scene.get();
+
+      components.camera.controls.setLookAt(12, 6, 8, 0, 0, -10);
+
+      const directionalLight = new THREE.DirectionalLight();
+      directionalLight.position.set(5, 10, 3);
+      directionalLight.intensity = 0.5;
+      scene.add(directionalLight);
+
+      const ambientLight = new THREE.AmbientLight();
+      ambientLight.intensity = 0.5;
+      scene.add(ambientLight);
+
+      const grid = new OBC.SimpleGrid(components, new THREE.Color(0x666666));
+      const customEffects = components.renderer.postproduction.customEffects;
+      customEffects.excludedMeshes.push(grid.get());
+
+      let fragments = new OBC.FragmentManager(components);
+      let fragmentIfcLoader = new OBC.FragmentIfcLoader(components);
+
+      fragmentIfcLoader.settings.wasm = {
+        path: "https://unpkg.com/web-ifc@0.0.44/",
+        absolute: true,
+      };
+
+      fragmentIfcLoader.settings.webIfc.COORDINATE_TO_ORIGIN = true;
+      fragmentIfcLoader.settings.webIfc.OPTIMIZE_PROFILES = true;
+
+      const fetched = await fetch("asdf.ifc");
+      const buffer = await fetched.arrayBuffer();
+      const byteArray = new Uint8Array(buffer);
+      const model = await fragmentIfcLoader.load(byteArray);
+      components.scene.get().add(model);
+
+      const mainToolbar = new OBC.Toolbar(components, {
+        name: "Main Toolbar",
+        position: "bottom",
+      });
+      components.ui.addToolbar(mainToolbar);
+
+      // Set up road navigator
+
+      const navigator = new OBC.RoadNavigator(components);
+      window.ondblclick = () => {
+        navigator.drawPoint();
+      };
+
+      navigator.loadCached();
+
+      // navigator._scene2d.camera.children[0].material.color.set(40, 40, 40);
+
+      mainToolbar.addChild(navigator.uiElement.get("main"));
+
+      window.onkeydown = (event) => {
+        if (event.code === "KeyS") {
+          navigator.select();
+        } else if (event.code === "KeyP") {
+          navigator.delete();
+        } else if (event.code === "KeyF") {
+          navigator.focus();
+        }
+      };
+
+      const styler = new OBC.FragmentClipStyler(components);
+      await styler.setup();
+      const stylerButton = styler.uiElement.get("mainButton");
+
+      styler.onChange.add(async () => {
+        await navigator.updateDrawings();
+      });
+
+      const classifier = new OBC.FragmentClassifier(components);
+      classifier.byEntity(model);
+      await styler.update();
+
+      const hider = new OBC.FragmentHider(components);
+      await hider.loadCached();
+      const hiderButton = hider.uiElement.get("main");
+
+      const propsProcessor = new OBC.IfcPropertiesProcessor(components);
+      const propsManager = new OBC.IfcPropertiesManager(components);
+      propsManager.wasm = {
+        path: "https://unpkg.com/web-ifc@0.0.44/",
+        absolute: true,
+      };
+
+      propsProcessor.propertiesManager = propsManager;
+      await propsManager.init();
+      propsProcessor.process(model);
+      mainToolbar.addChild(propsProcessor.uiElement.get("main"));
+
+      const highlighter = new OBC.FragmentHighlighter(components);
+      highlighter.setup();
+
+      highlighter.outlinesEnabled = true;
+
+      const highlighterEvents = highlighter.events;
+      highlighterEvents.select.onClear.add(() => {
+        propsProcessor.cleanPropertiesList();
+      });
+
+      highlighterEvents.select.onHighlight.add((selection) => {
+        const fragmentID = Object.keys(selection)[0];
+        const expressID = Number([...selection[fragmentID]][0]);
+        let model;
+        for (const group of fragments.groups) {
+          const fragmentFound = Object.values(group.keyFragments).find(
+            (id) => id === fragmentID
+          );
+          if (fragmentFound) model = group;
+        }
+        propsProcessor.renderProperties(model, expressID);
+      });
+
+      // Set up stats
+
+      const stats = new Stats();
+      stats.showPanel(2);
+      document.body.append(stats.dom);
+      stats.dom.style.left = "0px";
+      const renderer = components.renderer;
+      renderer.onBeforeUpdate.add(() => stats.begin());
+      renderer.onAfterUpdate.add(() => stats.end());
+    </script>
+  </body>
+</html>
